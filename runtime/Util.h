@@ -1,13 +1,11 @@
-//
-//  util.h
-//  stabilizer2
-//
-//  Created by Charlie Curtsinger on 9/13/11.
-//  Copyright 2011 University of Massachusetts. All rights reserved.
-//
+#ifndef RUNTIME_UTIL_H
+#define RUNTIME_UTIL_H
 
-#ifndef stabilizer2_util_h
-#define stabilizer2_util_h
+#include <stdint.h>
+#include <sys/mman.h>
+#include <randomnumbergenerator.h>
+
+#include "Arch.h"
 
 #ifndef PAGESIZE
 #define PAGESIZE 4096
@@ -21,29 +19,38 @@
 #define MAP_32BIT 0
 #endif
 
-#ifdef __APPLE__
-
-	#define GET_CONTEXT_IP(x) (((ucontext_t*)x)->uc_mcontext->__ss.__rip)
-	#define SET_CONTEXT_IP(x, y) ((((ucontext_t*)x)->uc_mcontext->__ss.__rip) = (y))
-
-#elif linux
-
-	#define GET_CONTEXT_IP(x) (((ucontext_t*)x)->uc_mcontext.gregs[REG_RIP])
-	#define SET_CONTEXT_IP(x, y) ((((ucontext_t*)x)->uc_mcontext.gregs[REG_RIP]) = (y))
-
+#if !defined(CODE_ALIGN)
+#define CODE_ALIGN 32
 #endif
 
-#define ALIGN_DOWN(x, y) (void*)((uintptr_t)(x) - ((uintptr_t)(x) % (y)))
-#define ALIGN_UP(x, y) ALIGN_DOWN(((uintptr_t)x + y - 1), y)
+static void flush_icache(void* begin, size_t size) {
+    _PPC(
+        uintptr_t p = (uintptr_t)begin & ~15UL;
+        for (size_t i = 0; i < size; i += 16) {
+            asm("icbi 0,%0" : : "r"(p));
+            p += 16;
+        }
+        asm("isync");
+    )
+}
 
-#ifndef NDEBUG
-#include <stdio.h>
-#include <assert.h>
-#define DEBUG(...) fprintf(stderr, "  "); fprintf(stderr, __VA_ARGS__); fprintf(stderr, "\n")
-#else
-#define DEBUG(_fmt, ...)
-#endif
-
-#define ABORT(...) fprintf(stderr, "ABORT %18s:%-3d: ", __FILE__, __LINE__); fprintf(stderr, __VA_ARGS__); fprintf(stderr, "\n"); abort()
+static inline uint8_t getRandomByte() {
+    static RandomNumberGenerator _rng;
+    static uint8_t _randCount = 0;
+    
+    static union {
+        uint8_t _rands[sizeof(int)];
+        int _bigRand;
+    };
+    
+    if(_randCount == sizeof(int)) {
+        _bigRand = _rng.next();
+        _randCount = sizeof(int);
+    }
+    
+    uint8_t r = _rands[_randCount];
+    _randCount++;
+    return r;
+}
 
 #endif

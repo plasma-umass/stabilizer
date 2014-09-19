@@ -1,8 +1,11 @@
-LEVEL=..
-LIBRARYNAME = libstabilizer
-LOADABLE_MODULE = 1
-USEDLIBS = 
+ROOT = ..
+CROSS_TARGET = 1
+TARGETS = $(ROOT)/libstabilizer.$(SHLIB_SUFFIX) $(ROOT)/libstabilizer.a
+INCLUDE_DIRS = $(ROOT)/Heap-Layers \
+    $(ROOT)/DieHard/src/include \
+    $(ROOT)/DieHard/src/include/math \
+    $(ROOT)/DieHard/src/include/rng \
+    $(ROOT)/DieHard/src/include/static \
+    $(ROOT)/DieHard/src/include/util
 
-include $(LEVEL)/Makefile.common
-
-CPPFLAGS += -DNDEBUG -I. -I./diehard -I./diehard/diehard -D_REENTRANT=0 -DHL_EXECUTABLE_HEAP -DHL_32BIT_HEAP -msse3
+include $(ROOT)/common.mk

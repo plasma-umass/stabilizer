@@ -1,62 +1,69 @@
-//
-//  Function.cpp
-//  stabilizer2
-//
-//  Created by Charlie Curtsinger on 9/13/11.
-//  Copyright 2011 University of Massachusetts. All rights reserved.
-//
-#include "Global.h"
 #include "Function.h"
 #include "FunctionLocation.h"
-#include "Jump.h"
-#include "Util.h"
-#include "Heaps.h"
 
-#include <sys/mman.h>
+/**
+ * Free the current function location and stack pad table
+ */
+Function::~Function() {
+    if(_current != NULL) {
+        _current->release();
+    }
+    
+    if(_stackPad != NULL) {
+        getDataHeap()->free(_stackPad);
+    }
+}
 
-using namespace std;
+/**
+ * Copy the code and relocation table for this function.  Use the pre-assembled
+ * code/table chunk if the function has already been relocated.
+ * 
+ * \arg target The destination of the copy.
+ */
+void Function::copyTo(void* target) {
+    if(_current == NULL) {
+        // Copy the code from the original function
+        memcpy(target, _code.base(), _code.size());
 
-namespace stabilizer {
+        // Patch in the saved header, since the original has been overwritten
+        *(FunctionHeader*)target = _savedHeader;
 
-	Function::Function(struct fn_info *info, GlobalMapType *globals) : name(info->name), base(info->base), limit(info->limit) {
-		void **p = info->refs;
-		while(*p != NULL) {
-			refs.push_back(*p);
-			p++;
-		}
+        // If there is a stack pad table, move it to a random location
+        if(_stackPad != NULL) {
+            uintptr_t* table = (uintptr_t*)_table.base();
+            for(size_t i=0; i<_table.size(); i+=sizeof(uintptr_t)) {
+                if(table[i] == (uintptr_t)_stackPad) {
+                    _stackPad = (uint8_t*)getDataHeap()->malloc(1);
+                    table[i] = (uintptr_t)_stackPad;
+                }
+            }
+        }
 
-		this->globals = globals;
+        // Copy the relocation table, if needed
+        if(_tableAdjacent) {
+            uint8_t* a = (uint8_t*)target;
+            memcpy(&a[_code.size()], _table.base(), _table.size());
+        }
+    } else {
+        memcpy(target, _current->_memory.base(), getAllocationSize());
+    }
+}
 
-		mprotect(ALIGN_DOWN(getBase(), PAGESIZE), 2*PAGESIZE, PROT_READ | PROT_WRITE | PROT_EXEC);
+/**
+ * Create a new FunctionLocation for this Function.
+ * \arg relocation The ID for the current relocation phase.
+ * \returns Whether or not a new location was created
+ */
+FunctionLocation* Function::relocate() {
+    FunctionLocation* oldLocation = _current;
+    _current = new FunctionLocation(this);
+    _current->activate();
 
-		current_location = new FunctionLocation(this);
-		relocated_count = 0;
-	}
-
-	FunctionLocation* Function::relocate() {
-		relocated_count++;
-
-		DEBUG("Relocating %s", getName());
-		void *new_base = Code_malloc(getTotalSize());
-	
-		FunctionLocation *new_l = new FunctionLocation(this, new_base);
-	
-		new(getBase()) Jump(new_base);
-	
-		if(!current_location->isOriginal()) {
-			current_location->decrementUsers();
-		}
-	
-		current_location = new_l;
-
-		DEBUG("Relocated %s: \n      [%p .. %p] -> [%p .. %p]",
-			  name,
-			  getBase(),
-			  (void*)((intptr_t)getBase() + getCodeSize()),
-			  new_l->getBase(),
-			  (void*)((intptr_t)new_l->getBase() + getCodeSize())
-		);
-	
-		return new_l;
-	}
+    // Fill the stack pad table with random bytes
+    if(_stackPad != NULL) {
+        // Update random stack pad
+        *_stackPad = getRandomByte();
+    }
+    
+    return oldLocation;
 }

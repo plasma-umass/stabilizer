@@ -1,121 +1,146 @@
-//
-//  Function.h
-//  stabilizer2
-//
-//  Created by Charlie Curtsinger on 9/13/11.
-//  Copyright 2011 University of Massachusetts. All rights reserved.
-//
+#if !defined(RUNTIME_FUNCTION_H)
+#define RUNTIME_FUNCTION_H
 
-#ifndef stabilizer2_Function_h
-#define stabilizer2_Function_h
-
-#include <stdio.h>
+#include <string.h>
 #include <sys/mman.h>
-#include <stdint.h>
 
-#include "Metadata.h"
-#include "Global.h"
-#include "Heaps.h"
+#include "Util.h"
+#include "Jump.h"
+#include "Trap.h"
+#include "Heap.h"
+#include "MemRange.h"
 
-#include <vector>
+struct Function;
+struct FunctionLocation;
 
-using namespace std;
+struct FunctionHeader {
+private:
+    union {
+        uint8_t _jmp[sizeof(Jump)];
+        uint8_t _trap[sizeof(Trap)];
+    };
+    
+    Function* _f;
+    
+public:
+    FunctionHeader(Function* f) : _f(f) {}
+    
+    void jumpTo(void* target) {
+        new(_jmp) Jump(target);
+    }
+    
+    void trap() {
+        new(_trap) Trap();
+    }
+    
+    Function* getFunction() {
+        return _f;
+    }
+};
 
-namespace stabilizer {
+struct Function {
+private:
+    friend class FunctionLocation;
+    
+    MemRange _code;
+    MemRange _table;
+    FunctionHeader* _header;
+    FunctionHeader _savedHeader;
+    
+    bool _tableAdjacent;    //< If true, the relocation table should be placed next to the function
+    
+    uint8_t* _stackPad;		//< The address of the stack pad value for this function
+    
+    FunctionLocation* _current;
+    
+    /**
+     * \brief Place a jump instruction to forward calls to this function
+     * \arg target The destination of the jump instruction
+     */
+    inline void forward(void* target) {
+        _header->jumpTo(target);
+        flush_icache(_header, sizeof(FunctionHeader));
+    }
+    
+    void copyTo(void* target);
+    
+public:
+    /**
+     * \brief Allocate Function objects on the randomized heap
+     * \arg sz The object size
+     */
+    void* operator new(size_t sz) {
+        return getDataHeap()->malloc(sz);
+    }
+    
+    /**
+     * \brief Free allocated memory to the randomized heap
+     * \arg p The object base pointer
+     */
+    void operator delete(void* p) {
+        getDataHeap()->free(p);
+    }
+    
+    /**
+    * \brief Create a new runtime representation of a function
+    * \arg codeBase The address of the function
+    * \arg codeLimit The top of the function
+    * \arg tableBase The address of the function's relocation table
+    * \arg tableSize The size of the function's relocation table
+    * \arg tableAdjacent If true, the relocation table should be placed immediately after the function
+	* \arg stackPad The address of this function's stack pad size
+    */
+    inline Function(void* codeBase, void* codeLimit, void* tableBase, size_t tableSize, bool tableAdjacent, uint8_t* stackPad) :
+        _code(codeBase, codeLimit), _table(tableBase, tableSize), _savedHeader(*(FunctionHeader*)_code.base()) {
+        
+        this->_tableAdjacent = tableAdjacent;
+        this->_stackPad = stackPad;
+        this->_current = NULL;
 
-	class Function;
-	class FunctionLocation;
-
-	typedef vector<void*, MDAllocator<void*> > PointerListType;
-
-	typedef vector<Function*, MDAllocator<Function*> > FunctionListType;
-
-	typedef vector<FunctionLocation*, MDAllocator<FunctionLocation*> > FunctionLocationListType;
-
-	struct fn_info {
-		char *name;
-		void *base;
-		void *limit;
-		void **refs;
-	};
-
-	struct fn_header {
-		uint8_t breakpoint;
-		Function *obj;
-	};
-
-	class Function : public Metadata {
-	private:
-		char *name;
-		void *base;
-		void *limit;
-		size_t relocated_count;
-
-		struct fn_header header;
-
-		GlobalMapType *globals;
-	
-		PointerListType refs;
-
-		FunctionLocation *current_location;
-
-	public:
-		Function(struct fn_info *info, GlobalMapType *globals);
-		FunctionLocation* relocate();
-	
-		size_t relocatedCount() {
-			return relocated_count;
-		}
-	
-		void placeBreakpoint() {
-			struct fn_header *h = (struct fn_header*)base;
-			header = *h;
-			
-			h->breakpoint = 0xCC;
-			h->obj = this;
-		}
-	
-		void restoreHeader() {
-			struct fn_header *h = (struct fn_header*)base;
-			*h = header;
-		}
-
-		char* getName() {
-			return name;
-		}
-		
-		void* getBase() {
-			return base;
-		}
-
-		inline GlobalMapType getGlobals() {
-			return *globals;
-		}
-
-		inline size_t getCodeSize() {
-			return (size_t)((uintptr_t)limit - (uintptr_t)base);
-		}
-
-		inline size_t getTableSize() {
-			return sizeof(void*) * (refs.size() + 2);
-		}
-
-		inline size_t getTotalSize() {
-			return getCodeSize() + getTableSize();
-		}
-
-		inline FunctionLocation* getCurrentLocation() {
-			return current_location;
-		}
-
-		inline PointerListType::iterator refs_begin() {
-			return refs.begin();
-		}
-
-		inline PointerListType::iterator refs_end() {
-			return refs.end();
-		}
-	};
-}
+        // Make the function header writable
+        if(mprotect(_code.pageBase(), _code.pageSize(), PROT_READ | PROT_WRITE | PROT_EXEC)) {
+            perror("Unable make code writable");
+            abort();
+        }
+        
+        // Make a copy of the function header
+        _savedHeader = *(FunctionHeader*)_code.base();
+        _header = new(_code.base()) FunctionHeader(this);
+    }
+    
+    /**
+     * \brief Free all code locations when deleted
+     */
+    ~Function();
+    
+    FunctionLocation* relocate();
+    
+    /**
+     * \brief Place a trap instruction at the beginning of this function
+     */
+    inline void setTrap() {
+        _header->trap();
+    }
+    
+    inline void* getCodeBase() {
+        return _code.base();
+    }
+    
+    inline size_t getCodeSize() {
+        return _code.size();
+    }
+    
+    inline size_t getAllocationSize() {
+        if(_tableAdjacent) {
+            return _code.size() + _table.size();
+        } else {
+            return _code.size();
+        }
+    }
+    
+    inline FunctionLocation* getCurrentLocation() {
+        return _current;
+    }
+};
 
 #endif
